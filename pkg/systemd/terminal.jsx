@@ -7,6 +7,9 @@ import { createRoot } from "react-dom/client";
 import { FormSelect, FormSelectOption } from "@patternfly/react-core/dist/esm/components/FormSelect/index.js";
 import { NumberInput } from "@patternfly/react-core/dist/esm/components/NumberInput/index.js";
 import { Toolbar, ToolbarContent, ToolbarGroup, ToolbarItem } from "@patternfly/react-core/dist/esm/components/Toolbar/index.js";
+import { Modal } from "@patternfly/react-core/dist/esm/components/Modal/index.js";
+import { Button } from '@patternfly/react-core/dist/esm/components/Button';
+
 
 import "./terminal.scss";
 
@@ -26,17 +29,20 @@ const _ = cockpit.gettext;
      * Spawns the user's shell in the user's home directory.
      */
     class UserTerminal extends React.Component {
-        createChannel(user) {
-            return cockpit.channel({
+        createChannel(user, dir) {
+            const ch = cockpit.channel({
                 payload: "stream",
                 spawn: [user.shell || "/bin/bash"],
                 environ: [
                     "TERM=xterm-256color",
                 ],
-                directory: user.home || "/",
+                directory: dir || user.home || "/",
                 pty: true,
                 binary: true,
             });
+            ch.addEventListener("ready", (_, msg) => this.setState({ pid: msg.pid }), { once: true });
+            ch.addEventListener("close", () => this.setState({ pid: null }), { once: true });
+            return ch;
         }
 
         constructor(props) {
@@ -66,28 +72,68 @@ const _ = cockpit.gettext;
                 title: 'Terminal',
                 theme: theme || "black-theme",
                 size: parseInt(size) || 16,
+                openModal: false,
+                pid: null,
             };
             this.onTitleChanged = this.onTitleChanged.bind(this);
             this.onResetClick = this.onResetClick.bind(this);
             this.onThemeChanged = this.onThemeChanged.bind(this);
             this.onPlus = this.onPlus.bind(this);
             this.onMinus = this.onMinus.bind(this);
+            this.onModal = this.onModal.bind(this);
+            this.onNavigate = this.onNavigate.bind(this);
 
             this.terminalRef = React.createRef();
             this.resetButtonRef = React.createRef();
 
             this.minSize = 6;
             this.maxSize = 40;
+            // this.isModalOpen = false;
         }
 
         async componentDidMount() {
-            const user = await cockpit.user();
-            this.setState({ user, channel: this.createChannel(user) });
+
+
+            cockpit.addEventListener("locationchanged", this.onNavigate);
+            this.onNavigate()
+        // return () => cockpit.removeEventListener("locationchanged", onNavigate);
+        //     const user = await cockpit.user();
+        //     this.setState({ user, channel: this.createChannel(user, cockpit.location.options.path) });
+        }
+
+        componentWillUnmount() {
+            cockpit.removeEventListener("locationchanged", this.onNavigate);
         }
 
         onTitleChanged(title) {
             this.setState({ title });
         }
+
+        async onNavigate(){
+            const { options, path } = cockpit.location;
+            console.log(path)
+            console.log(options.path)
+            console.log("HERE HERE HERE")
+            const user = await cockpit.user();
+            console.log(this.state.pid)
+            if (this.state.pid !== null){
+                // const cmmd = "grep -r '^PPid:[[:space:]]*" + this.state.pid + "$' /proc/*/status";
+                const cmmd = "grep -r '^Pid:[[:space:]]*" + this.state.pid + "$' /proc/*/status";
+                const pid = await cockpit.script(cmmd, [], { err: "message"});
+                console.log(pid);
+
+                // this.state.openModal = true
+            }
+            // const cmmd = "ls -R /home/admin/a/*"
+            // const pid = await cockpit.spawn(["bash", "-c", cmmd]);
+
+            this.setState({ user, channel: this.createChannel(user, cockpit.location.options.path) });
+
+            // const pid = await cockpit.spawn(["grep", "-r", "'^PPid:[[:space:]]*" + this.state.pid + "$'", "/proc/*/status"]);
+            console.log(this.state.pid)
+
+        }
+
 
         invalidateCookie(key) {
             const cookie = key + "=''" +
@@ -118,17 +164,31 @@ const _ = cockpit.gettext;
             if (event.button !== 0)
                 return;
 
-            if (!this.state.channel.valid && this.state.user)
+            if (!this.state.channel.valid && this.state.user){
                 this.setState(prevState => ({ channel: this.createChannel(prevState.user) }));
-            else
+            }
+            else{
                 this.terminalRef.current.reset();
+            }
 
             // don't focus the button, but keep it on the terminal
             this.resetButtonRef.current.blur();
             this.terminalRef.current.focus();
         }
 
+        // onOpenPath(){
+        //     this.terminalRef.current.reset();
+        //     this.setState({ channel: this.createChannel(this.state.user, cockpit.location.options.path) });
+        //     cockpit.location.replace("/")
+        // }
+
+        onModal(){
+            this.setState({ openModal: false });
+            // this.onOpenPath()
+        }
+
         render() {
+            // this.state.openModal=true;
             const terminal = this.state.channel
                 ? <Terminal ref={this.terminalRef}
                             channel={this.state.channel}
@@ -137,7 +197,6 @@ const _ = cockpit.gettext;
                             parentId="the-terminal"
                             onTitleChanged={this.onTitleChanged} />
                 : <span>Loading...</span>;
-
             return (
                 <div className="console-ct-container">
                     <div className="terminal-group">
@@ -183,8 +242,36 @@ const _ = cockpit.gettext;
                                             className="pf-v5-c-button pf-m-secondary terminal-reset"
                                             onClick={this.onResetClick}>{_("Reset")}</button>
                                 </ToolbarItem>
+                                <ToolbarItem>
+                                    <span>shell pid: {this.state.pid}</span>
+                                </ToolbarItem>
+                                <ToolbarItem>
+                                <button ref={this.asdf}
+                    className="pf-v5-c-button pf-m-secondary asdf"
+                     onClick={() => {this.setState({ openModal: true })}}>{_("asdf")}</button>
+                                </ToolbarItem>
+                                <ToolbarItem>
+                                <button ref={this.send}
+                    className="pf-v5-c-button pf-m-secondary send"
+                     onClick={() => {this.state.channel.send("ls")}}>{_("send")}</button>
+                     </ToolbarItem>
                             </ToolbarContent>
                         </Toolbar>
+                        <Modal title={_("Change directory?")}
+                       position="top"
+                       variant="small"
+                       isOpen={this.state.openModal}
+                       onClose={() => this.setState({ openModal: false })}
+                       actions={[
+                            <Button key="yeah" variant="primary" onClick={this.onModal}>
+                               {_("Change directory")}
+                           </Button>,
+                           <Button key="cancel" variant="secondary" onClick={() => this.setState({ openModal: false })}>
+                               {_("Cancel")}
+                           </Button>
+                       ]}>
+                    {_("There is still a process running in this terminal.\nChanging the directory will kill it.")}
+                </Modal>
                     </div>
                     <div className={"terminal-body " + this.state.theme} id="the-terminal">
                         {terminal}
@@ -193,11 +280,15 @@ const _ = cockpit.gettext;
             );
         }
     }
+    // console.log(cockpit.location.options.path);
     UserTerminal.displayName = "UserTerminal";
-
     const root = createRoot(document.getElementById('terminal'));
     root.render(<UserTerminal />);
-
+    // cockpit.location.replace("/")
     /* And show the body */
     document.body.removeAttribute("hidden");
 }());
+
+
+
+
