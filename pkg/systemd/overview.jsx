@@ -168,6 +168,10 @@ class OverviewPage extends React.Component {
                          this.state.hostnameData.OperatingSystemPrettyName &&
                          <div className="ct-overview-header-subheading" id="system_information_os_text">{cockpit.format(_("running $0"), this.state.hostnameData.OperatingSystemPrettyName)}</div>}
                     </div>
+                    {/* DEV ARTIFACT: FOR TESTING */}
+                    <button ref={this.asdf}
+                    className="pf-v5-c-button pf-m-secondary asdf"
+                     onClick={() => cockpit.jump("/system/terminal#/?path=/home%2Fadmin%2Fa%2Fb")}>{_("asdf")}</button>
                     <div className='ct-overview-header-actions'>
                         { show_superuser && <SuperuserIndicator proxy={this.superuser} /> }
                         { "\n" }

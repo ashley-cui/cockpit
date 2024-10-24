@@ -7,6 +7,9 @@ import { createRoot } from "react-dom/client";
 import { FormSelect, FormSelectOption } from "@patternfly/react-core/dist/esm/components/FormSelect/index.js";
 import { NumberInput } from "@patternfly/react-core/dist/esm/components/NumberInput/index.js";
 import { Toolbar, ToolbarContent, ToolbarGroup, ToolbarItem } from "@patternfly/react-core/dist/esm/components/Toolbar/index.js";
+import { Alert, AlertActionCloseButton, AlertActionLink } from "@patternfly/react-core/dist/esm/components/Alert/index.js";
+import { fsinfo } from "cockpit/fsinfo";
+
 
 import "./terminal.scss";
 
@@ -26,17 +29,20 @@ const _ = cockpit.gettext;
      * Spawns the user's shell in the user's home directory.
      */
     class UserTerminal extends React.Component {
-        createChannel(user) {
-            return cockpit.channel({
+        createChannel(user, dir) {
+            const ch = cockpit.channel({
                 payload: "stream",
                 spawn: [user.shell || "/bin/bash"],
                 environ: [
                     "TERM=xterm-256color",
                 ],
-                directory: user.home || "/",
+                directory: dir || user.home || "/",
                 pty: true,
                 binary: true,
             });
+            ch.addEventListener("ready", (_, msg) => this.setState({ pid: msg.pid }), { once: true });
+            ch.addEventListener("close", () => this.setState({ pid: null }), { once: true });
+            return ch;
         }
 
         constructor(props) {
@@ -66,12 +72,17 @@ const _ = cockpit.gettext;
                 title: 'Terminal',
                 theme: theme || "black-theme",
                 size: parseInt(size) || 16,
+                changePathBusy: false,
+                pathError: null,
+                pid: null,
             };
             this.onTitleChanged = this.onTitleChanged.bind(this);
             this.onResetClick = this.onResetClick.bind(this);
             this.onThemeChanged = this.onThemeChanged.bind(this);
             this.onPlus = this.onPlus.bind(this);
             this.onMinus = this.onMinus.bind(this);
+            this.forceChangeDirectory = this.forceChangeDirectory.bind(this);
+            this.onNavigate = this.onNavigate.bind(this);
 
             this.terminalRef = React.createRef();
             this.resetButtonRef = React.createRef();
@@ -81,8 +92,28 @@ const _ = cockpit.gettext;
         }
 
         async componentDidMount() {
+            cockpit.addEventListener("locationchanged", this.onNavigate);
             const user = await cockpit.user();
-            this.setState({ user, channel: this.createChannel(user) });
+
+            // let dir;
+            // if (cockpit.location.options.path) {
+            //     try {
+            //         const info = await fsinfo(String(cockpit.location.options.path), ['type'])
+            //         if (info.type === "dir"){
+            //             dir = cockpit.location.options.path
+            //         }else {
+            //             this.setState({ pathError: cockpit.format(_("$0 is not a directory"), cockpit.location.options.path) })
+            //         }
+
+            //     } catch (err){
+            //         this.setState({ pathError: cockpit.format(_("$0 does not exist"), cockpit.location.options.path)})
+            //     }
+            // }
+            this.setState({ user, channel: this.createChannel(user)});
+        }
+
+        componentWillUnmount() {
+            cockpit.removeEventListener("locationchanged", this.onNavigate);
         }
 
         onTitleChanged(title) {
@@ -93,6 +124,53 @@ const _ = cockpit.gettext;
             const cookie = key + "=''" +
                          "; path=/; Max-Age=0;";
             document.cookie = cookie;
+        }
+
+        forceChangeDirectory(){
+            this.setState(prevState => ({
+                channel: this.createChannel(prevState.user, cockpit.location.options.path),
+                changePathBusy: false,
+            }));
+        }
+
+        async onNavigate(){
+            // Clear old path errors
+            this.setState({ pathError: null })
+
+            // If there's no path to change to, then we're done here
+            if (!cockpit.location.options.path) {
+                console.log("nothing to change!")
+                return;
+            }
+            // Check if path we're changing to exists
+            try {
+                const info = await fsinfo(String(cockpit.location.options.path), ['type'])
+                if (info.type !== "dir"){
+                    console.log("not a dir")
+                    this.setState({ pathError: cockpit.format(_("$0 is not a directory"), cockpit.location.options.path) })
+                    return
+                }
+            } catch (err){
+                console.log("dir not exist")
+                this.setState({ pathError: cockpit.format(_("$0 does not exist"), cockpit.location.options.path)})
+                return;
+            }
+
+            // console.log("valid dir!!")
+            // if (this.state.pid !== null){
+            //     console.log("pid exists")
+            //     // Check if current shell has a process running in it, ie it's busy
+            //     const cmmd = "grep -qr '^PPid:[[:space:]]*" + this.state.pid + "$' /proc/*/status";
+            //     cockpit.script(cmmd, [], {err: "message"})
+            //         .then(() => {
+            //             console.log("showing busy modal...")
+            //             this.setState({ changePathBusy: true })
+            //         })
+            //         .catch((err) => {
+            //             console.log("not busy, changing immediately")
+            //             this.setState(prevState => ({ channel: this.createChannel(prevState.user, cockpit.location.options.path) }));
+            //         })
+            // }
         }
 
         onPlus() {
@@ -185,6 +263,24 @@ const _ = cockpit.gettext;
                                 </ToolbarItem>
                             </ToolbarContent>
                         </Toolbar>
+                    </div>
+                <div className={"ct-terminal-dir-alert"}>
+                    {this.state.pathError && <Alert isInline variant='danger'
+                        title = {cockpit.format(_("Error opening directory: $0"), this.state.pathError)}
+                        actionClose={<AlertActionCloseButton onClose={() => this.setState({ pathError: null })}>
+                        </AlertActionCloseButton>}>
+                    </Alert>}
+                    {this.state.changePathBusy && <Alert title={_("There is still a process running in this terminal. Changing the directory will kill it.")}
+                            variant="warning"
+                            actionClose={<AlertActionCloseButton onClose={() =>  this.setState({ changePathBusy: false })}></AlertActionCloseButton>}
+                            actionLinks={
+                                <React.Fragment>
+                                  <AlertActionLink onClick={this.forceChangeDirectory}>{_("Continue")}</AlertActionLink>
+                                  <AlertActionLink onClick={() => this.setState({ changePathBusy: false })}>{_("Cancel")}</AlertActionLink>
+                                </React.Fragment>
+                              }>
+                              </Alert>
+                    }
                     </div>
                     <div className={"terminal-body " + this.state.theme} id="the-terminal">
                         {terminal}
